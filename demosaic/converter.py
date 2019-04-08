@@ -11,7 +11,7 @@ class Converter(object):
       name, tp = n.split(".")[-2:]
 
       old_name = self._remap(name)
-      # print(old_name, "->", name)
+      #print(old_name, "->", name)
 
       if tp == "bias":
         idx = 1
@@ -22,11 +22,11 @@ class Converter(object):
       # print(name, tp, data.shape, p.shape)
 
       # Overwiter
-      # print(p.mean().item(), p.std().item())
+      #print(p.mean().item(), p.std().item())
       # import ipdb; ipdb.set_trace()
-      # print(name, old_name, p.shape, data.shape)
+      #print(name, old_name, p.shape, data.shape)
       p.data.copy_(th.from_numpy(data))
-      # print(p.mean().item(), p.std().item())
+      #print(p.mean().item(), p.std().item())
 
   def _remap(self, s):
     if s == "pack_mosaic":
