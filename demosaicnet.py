@@ -29,14 +29,14 @@
 """Run the demosaicking network on an image or a directory containing multiple images."""
 
 import argparse
-import cv2
+import skimage.io
 import numpy as np
 import os
 import re
 import time
+import torch as th
 from tqdm import tqdm
 
-import torch as th
 
 import demosaic.modules as modules
 import demosaic.converter as converter
@@ -98,28 +98,29 @@ def _blob_to_image(blob):
     return out
 
 
-
-
 def bayer_mosaic(im):
-    """GRBG Bayer mosaic."""
+    """Bayer mosaic.
+
+     G R G R
+     B G B G
+     G R G R
+     B G B G
+    """
 
     mos = np.copy(im)
-    mask = np.ones_like(im)
+    mask = np.zeros(im.shape)
 
-    # red
-    mask[0, ::2, 0::2] = 0
-    mask[0, 1::2, :] = 0
+    # Red
+    mask[0, 0::2, 1::2] = 1
 
     # green
-    mask[1, ::2, 1::2] = 0
-    mask[1, 1::2, ::2] = 0
+    mask[1, 0::2, 0::2] = 1
+    mask[1, 1::2, 1::2] = 1
 
     # blue
-    mask[2, 0::2, :] = 0
-    mask[2, 1::2, 1::2] = 0
+    mask[2, 1::2, 0::2] = 1
 
     return mos*mask, mask
-
 
 
 def xtrans_mosaic(im):
@@ -134,23 +135,23 @@ def xtrans_mosaic(im):
     """
     mask = np.zeros((3, 6, 6), dtype=np.float32)
     g_pos = [(0,0), (0,2), (0,3), (0,5),
-           (1,1), (1,4),
-           (2,0), (2,2), (2,3), (2,5),
-           (3,0), (3,2), (3,3), (3,5), 
-           (4,1), (4,4), 
-           (5,0), (5,2), (5,3), (5,5)]
+            (1,1), (1,4),
+            (2,0), (2,2), (2,3), (2,5),
+            (3,0), (3,2), (3,3), (3,5), 
+            (4,1), (4,4), 
+            (5,0), (5,2), (5,3), (5,5)]
     r_pos = [(0,4), 
-           (1,0), (1,2), 
-           (2,4), 
-           (3,1), 
-           (4,3), (4,5), 
-           (5,1)]
+            (1,0), (1,2), 
+            (2,4), 
+            (3,1), 
+            (4,3), (4,5), 
+            (5,1)]
     b_pos = [(0,1), 
-           (1,3), (1,5), 
-           (2,1), 
-           (3,4), 
-           (4,0), (4,2), 
-           (5,4)]
+            (1,3), (1,5), 
+            (2,1), 
+            (3,4), 
+            (4,0), (4,2), 
+            (5,4)]
 
     for y, x in g_pos:
         mask[1, y, x] = 1
@@ -170,75 +171,6 @@ def xtrans_mosaic(im):
     return mask*mos, mask
 
 
-
-
-
-
-def demosaick_old(net, M, noise, psize, crop):
-    start_time = time.time()
-    h,w = M.shape[:2]
-
-    psize = min(min(psize,h),w)
-    psize -= psize % 2
-    patch_step = psize
-    patch_step -= 2*crop
-    shift_factor = 2
-
-    # Result array
-    R = np.zeros(M.shape, dtype = np.float32)
-
-    rangex = range(0,w-2*crop,patch_step)
-    rangey = range(0,h-2*crop,patch_step)
-    ntiles = len(rangex)*len(rangey)
-    with tqdm(total=ntiles, unit='tiles', unit_scale=True) as pbar:
-        for start_x in rangex:
-            for start_y in rangey:
-                end_x = start_x+psize
-                end_y = start_y+psize
-                if end_x > w:
-                    end_x = w
-                    end_x = shift_factor*((end_x)/shift_factor)
-                    start_x = end_x-psize
-                if end_y > h:
-                    end_y = h
-                    end_y = shift_factor*((end_y)/shift_factor)
-                    start_y = end_y-psize
-
-
-                tileM = M[start_y:end_y, start_x:end_x, :] 
-                tileM = tileM[np.newaxis,:,:,:]
-                tileM = tileM.transpose((0,3,1,2))
-
-                net.blobs['mosaick'].reshape(*tileM.shape)
-                net.blobs['mosaick'].data[...] = tileM
-
-                if 'noise_level' in net.blobs.keys():
-                    noise_shape = [1,]
-                    net.blobs['noise_level'].reshape(*noise_shape)
-                    net.blobs['noise_level'].data[...] = noise
-
-                net.forward()
-
-                out = net.blobs['output']
-                out = _blob_to_image(out)
-                s = out.shape[0]
-
-                R[start_y+crop:start_y+crop+s,
-                  start_x+crop:start_x+crop+s,:] = out
-
-                pbar.update(1)
-
-    R[R<0] = 0.0
-    R[R>1] = 1.0
-
-    runtime = (time.time()-start_time)*1000  # in ms
-
-    return R, runtime
-
-
-
-
-
 def demosaick(net, M, noiselevel, tile_size, crop):
 
     # get the device of the network and apply it to the variables
@@ -249,18 +181,14 @@ def demosaick(net, M, noiselevel, tile_size, crop):
     _, _, h, w = M.shape
 
     out_ref = th.zeros(3, h, w).to(device=dev, dtype=th.float)
-    
+
     sigma_noise = noiselevel * th.ones(1).to(device=dev, dtype=th.float)
 
     tile_size = min(min(tile_size, h), w)
 
     tot_time_ref = 0
 
-#    if xtrans:
-#      mod = 6
-#    else:
-#      mod = 2
-    # good for both xtrans and bayer
+    # mosaic block modulo: good for both xtrans and bayer
     mod = 6
     tile_step = tile_size - crop*2
 
@@ -289,13 +217,11 @@ def demosaick(net, M, noiselevel, tile_size, crop):
             # noise level is ignored ny the XtransNetwork and BayerNetwork
             sample = {"mosaic": M[:, :, start_y:end_y, start_x:end_x], "noise_level": sigma_noise}
 
-            th.cuda.synchronize()
             start = time.time()
 
             # call the network
             outr = net(sample)
 
-            th.cuda.synchronize()
             tot_time_ref += time.time()-start
 
             oh, ow = outr.shape[2:]
@@ -311,16 +237,16 @@ def demosaick(net, M, noiselevel, tile_size, crop):
     return out_ref, tot_time_ref
 
 
-
-
 def demosaick_load_model(noiselevel=0.0, xtrans=False):
     '''
     this function uses the hardcoded paths of the pretrained models 
     '''
-    pretrained_xtrans = 'pretrained_models/xtrans/'
-    pretrained_bayer = 'pretrained_models/bayer/'
-    pretrained_bayer_noise = 'pretrained_models/bayer_noise/'
-    
+    here = os.path.dirname(__file__)
+
+    pretrained_xtrans = here+'/pretrained_models/xtrans/'
+    pretrained_bayer = here+'/pretrained_models/bayer/'
+    pretrained_bayer_noise = here+'/pretrained_models/bayer_noise/'
+
     print("Loading Caffe weights")
     if xtrans:
         model_ref = modules.get({"model": "XtransNetwork"})
@@ -340,8 +266,6 @@ def demosaick_load_model(noiselevel=0.0, xtrans=False):
     return model_ref
 
 
-
-
 def main(args):
 
     model_ref = demosaick_load_model(args.noise, xtrans=(args.mosaic_type == 'xtrans') )
@@ -349,165 +273,131 @@ def main(args):
         model_ref.cuda()
     else:
         model_ref.cpu()
-          
-    # this results from padding 
-    crop = 36
+
+    # Pad image to avoid border effects 
+    crop = 48
     print ("Crop", crop)
 
-    regexp = re.compile(r".*\.(png|tif|jpg)")
-    if os.path.isdir(args.input):
-        print ('dir')
-        inputs = [f for f in os.listdir(args.input) if regexp.match(f)]
-        inputs = [os.path.join(args.input, f) for f in inputs]
-    else:
-        inputs = [args.input]
+    Iref = skimage.io.imread(args.input)
+    if len(Iref.shape) == 4:  # removes alpha
+        Iref = Iref[:, :, :3]
+    dtype = Iref.dtype
+    if dtype not in [np.uint8, np.uint16, np.float16, np.float32, np.float64]:
+        raise ValueError('Input type not handled: {}'.format(dtype))
 
-    avg_psnr = 0
-    n = 0
-    for fname in inputs:
-        print ('+ Processing {}'.format(fname))
-        Iref = cv2.imread(fname, -1)
-        if len(Iref.shape) == 4:  # removes alpha
-            Iref = Iref[:, :, :3]
-        if len(Iref.shape) == 3:  # CV color storage..
-            Iref = cv2.cvtColor(Iref,cv2.COLOR_BGR2RGB) 
-        dtype = Iref.dtype
-        if dtype not in [np.uint8, np.uint16]:
-            raise ValueError('Input type not handled: {}'.format(dtype))
+    # if integers make floats
+    if dtype in [np.uint8, np.uint16]:
         Iref = _uint2float(Iref)
 
-        if args.linear_input:
-            print ("  - Input is linear, mapping to sRGB for processing")
-            Iref = np.power(Iref, 1.0/2.2)
+    if args.linear_input:
+        print ("  - Input is linear, mapping to sRGB for processing")
+        Iref = np.power(Iref, 1.0/2.2)
 
-        if len(Iref.shape) == 2:
-            # Offset the image to match the our mosaic pattern
-            if args.offset_x > 0:
-                print ('  - offset x')
-                # Iref = Iref[:, 1:]
-                Iref = np.pad(Iref, [(0, 0), (args.offset_x, 0)], 'reflect')
+    if len(Iref.shape) == 2:
+        # Offset the image to match the our mosaic pattern
+        if args.offset_x > 0:
+            print ('  - offset x')
+            # Iref = Iref[:, 1:]
+            Iref = np.pad(Iref, [(0, 0), (args.offset_x, 0)], 'symmetric')
 
-            if args.offset_y > 0:
-                print ('  - offset y')
-                # Iref = Iref[1:, :]
-                Iref = np.pad(Iref, [(args.offset_y, 0), (0,0)], 'reflect')
-            has_groundtruth = False
-            Iref = np.dstack((Iref, Iref, Iref))
+        if args.offset_y > 0:
+            print ('  - offset y')
+            # Iref = Iref[1:, :]
+            Iref = np.pad(Iref, [(args.offset_y, 0), (0,0)], 'symmetric')
+        has_groundtruth = False
+        Iref = np.dstack((Iref, Iref, Iref))
+    else:
+        # No need for offsets if we have the ground-truth
+        has_groundtruth = True
+
+    if has_groundtruth and args.noise > 0:
+        print ('  - adding noise sigma={:.3f}'.format(args.noise))
+        I = Iref + np.random.normal(
+                loc=0.0, scale = args.noise , size = Iref.shape )
+    else:
+        I = Iref
+
+    if crop > 0:
+        if args.mosaic_type == 'bayer':
+            c = crop + (crop %2)  # Make sure we don't change the pattern's period
+            I = np.pad(I, [(c, c), (c, c), (0, 0)], 'symmetric')
         else:
-            # No need for offsets if we have the ground-truth
-            has_groundtruth = True
+            c = crop + (crop % 6)  # Make sure we don't change the pattern's period
+            I = np.pad(I, [(c, c), (c, c), (0, 0)], 'symmetric')
 
-        if has_groundtruth and args.noise > 0:
-            print ('  - adding noise sigma={:.3f}'.format(args.noise))
-            I = Iref + np.random.normal(
-                    loc=0.0, scale = args.noise , size = Iref.shape )
-        else:
-            I = Iref
+    if has_groundtruth:
+        print ('  - making mosaick')
+    else:
+        print ('  - formatting mosaick')
 
-        if crop > 0:
-            if args.mosaic_type == 'bayer':
-                c = crop + (crop %2)  # Make sure we don't change the pattern's period
-                I = np.pad(I, [(c, c), (c, c), (0, 0)], 'reflect')
-            else:
-                c = crop + (crop % 6)  # Make sure we don't change the pattern's period
-                I = np.pad(I, [(c, c), (c, c), (0, 0)], 'reflect')
+    I = np.array(I).transpose(2, 0, 1).astype(np.float32)
 
-        if has_groundtruth:
-            print ('  - making mosaick')
-        else:
-            print ('  - formatting mosaick')
-            
-        #M = _make_mosaic(I, args.mosaic_type)
-        
-        
-        
-        
-        
-        
-        I = np.array(I).transpose(2, 0, 1).astype(np.float32)
-   
-        if args.mosaic_type == 'xtrans':
-            M = xtrans_mosaic(I)
-        else:
-            M = bayer_mosaic(I)
-        #im = np.expand_dims(im, 0) 
-        # the othe field is just the mask
-        M = np.array(M)[:1,:,:,:]
+    if args.mosaic_type == 'xtrans':
+        M = xtrans_mosaic(I)
+    else:
+        M = bayer_mosaic(I)
+    #im = np.expand_dims(im, 0) 
+    # the othe field is just the mask
+    M = np.array(M)[:1,:,:,:]
+
+    R, runtime = demosaick(model_ref, M, args.noise, args.tile_size, crop)
+
+    R = R.squeeze().transpose(1, 2, 0)
+
+    # Remove the padding
+    if crop > 0:
+        R = R[c:-c, c:-c, :]
+        I = I[c:-c, c:-c, :]
+        M = M[c:-c, c:-c, :]
+
+    if not has_groundtruth:
+        if args.offset_x > 0:
+            print ('  - remove offset x')
+            R = R[:, args.offset_x:]
+            I = I[:, args.offset_x:]
+            M = M[:, args.offset_x:]
+
+        if args.offset_y > 0:
+            print ('  - remove offset y')
+            R = R[args.offset_y:, :]
+            I = I[args.offset_y:, :]
+            M = M[args.offset_y:, :]
+
+    if len(Iref.shape) == 2:
+        # Offset the image to match the our mosaic pattern
+        if args.offset_x == 1:
+            print ('  - offset x')
+            Iref = Iref[:, 1:]
+
+        if args.offset_y == 1:
+            print ('  - offset y')
+            Iref = Iref[1:, :]
+        has_groundtruth = False
+
+    if args.linear_input:
+        print ("  - Input is linear, mapping output back from sRGB")
+        R = np.power(R, 2.2)
+
+    if has_groundtruth:
+        p = _psnr(R, Iref, crop=crop)
+        file_psnr = open(args.output_psnr, 'w')
+        file_psnr.write(str(p))
+        file_psnr.close()
+        print ('  PSNR = {:.1f} dB, time = {} ms'.format(p, int(runtime)))
+    else:
+        print ('  - raw image without groundtruth, bypassing metric')
+    out = _float2uint(R, dtype)
+
+    # Write output image
+    skimage.io.imsave(args.output, out)
 
 
-        R, runtime = demosaick(model_ref, M, args.noise, args.tile_size, crop)
-
-        
-        R = R.squeeze().transpose(1, 2, 0)
-
- 
-        
-        
-        
-        if crop > 0:
-            R = R[c:-c, c:-c, :]
-            I = I[c:-c, c:-c, :]
-            M = M[c:-c, c:-c, :]
-        
-        if not has_groundtruth:
-            if args.offset_x > 0:
-                print ('  - remove offset x')
-                R = R[:, args.offset_x:]
-                I = I[:, args.offset_x:]
-                M = M[:, args.offset_x:]
-
-            if args.offset_y > 0:
-                print ('  - remove offset y')
-                R = R[args.offset_y:, :]
-                I = I[args.offset_y:, :]
-                M = M[args.offset_y:, :]
-
-        if len(Iref.shape) == 2:
-            # Offset the image to match the our mosaic pattern
-            if args.offset_x == 1:
-                print ('  - offset x')
-                Iref = Iref[:, 1:]
-
-            if args.offset_y == 1:
-                print ('  - offset y')
-                Iref = Iref[1:, :]
-            has_groundtruth = False
-
-        if args.linear_input:
-            print ("  - Input is linear, mapping output back from sRGB")
-            R = np.power(R, 2.2)
-
-        if has_groundtruth:
-            p = _psnr(R, Iref, crop=crop)
-            avg_psnr += p
-            n += 1
-            #diff = np.abs((R-Iref))
-            #diff /= np.amax(diff)
-            #out = np.hstack((Iref, I, M, R, diff))
-            #out = _float2uint(out, dtype)
-            print ('  PSNR = {:.1f} dB, time = {} ms'.format(p, int(runtime)))
-        else:
-            print ('  - raw image without groundtruth, bypassing metric')
-        out = _float2uint(R, dtype)
-        
-        
-        outputname = os.path.join(args.output, os.path.split(fname)[-1])
-        # CV color storage..
-        out = cv2.cvtColor(out, cv2.COLOR_RGB2BGR) 
-        cv2.imwrite(outputname, out)
-
-    if has_groundtruth and n > 0:
-        avg_psnr /= n
-        print ('+ Average PSNR = {:.1f} dB'.format(avg_psnr))
-
-    
-    
-    
 if __name__ == "__main__":
     parser = argparse.ArgumentParser()
 
-    parser.add_argument('--input', type=str, default='data/36111627_7991189675.jpg', help='path to input image or folder.')
-    parser.add_argument('--output', type=str, default='output', help='path to output folder.')
+    parser.add_argument('--input', type=str, default='input.png', help='path to input image.')
+    parser.add_argument('--output', type=str, default='output.png', help='path to output image.')
+    parser.add_argument('--output_psnr', type=str, default='output_psnr.txt', help='path to output psnr.')
     parser.add_argument('--noise', type=float, default=0.0, help='standard deviation of additive Gaussian noise, w.r.t to a [0,1] intensity scale.')
     parser.add_argument('--offset_x', type=int, default=0, help='number of pixels to offset the mosaick in the x-axis.')
     parser.add_argument('--offset_y', type=int, default=0, help='number of pixels to offset the mosaick in the y-axis.')
@@ -527,5 +417,3 @@ if __name__ == "__main__":
         raise ValueError(msg)
 
     main(args)
-
-
