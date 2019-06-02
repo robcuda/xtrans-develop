@@ -188,7 +188,7 @@ def demosaick(net, M, noiselevel, tile_size, crop):
 
     tot_time_ref = 0
 
-    # mosaic block modulo: good for both xtrans and bayer
+    # mosaic block stride: good for both xtrans and bayer
     mod = 6
     tile_step = tile_size - crop*2
 
@@ -237,28 +237,34 @@ def demosaick(net, M, noiselevel, tile_size, crop):
     return out_ref, tot_time_ref
 
 
-def demosaick_load_model(noiselevel=0.0, xtrans=False):
+def demosaick_load_model(net_path=None, noiselevel=0.0, xtrans=False):
     '''
-    this function uses the hardcoded paths of the pretrained models 
+    computes the relative paths to the pretrained models (Caffe)
+    if net_path is specified then the provided path is used
+    if xtrans is set then the XtransNetwork model is used, 
+    otherwise BayerNetwork or BayerNetworkNoise are used depending
+    on whether noiselevel>0
     '''
     here = os.path.dirname(__file__)
-
-    pretrained_xtrans = here+'/pretrained_models/xtrans/'
-    pretrained_bayer = here+'/pretrained_models/bayer/'
-    pretrained_bayer_noise = here+'/pretrained_models/bayer_noise/'
+    pretrained_base = here+'/pretrained_models/'
 
     print("Loading Caffe weights")
     if xtrans:
-        model_ref = modules.get({"model": "XtransNetwork"})
-        cvt = converter.Converter(pretrained_xtrans, "XtransNetwork")
+        model_name = "XtransNetwork"
+        model_path = pretrained_base+'/xtrans/'
     else:
         if noiselevel==0.0:
-
-            model_ref = modules.get({"model": "BayerNetwork"})
-            cvt = converter.Converter(pretrained_bayer, "BayerNetwork")
+            model_name = "BayerNetwork"
+            model_path = pretrained_base+'/bayer/'
         else:
-            model_ref = modules.get({"model": "BayerNetworkNoise"})
-            cvt = converter.Converter(pretrained_bayer_noise, "BayerNetworkNoise")
+            model_name = "BayerNetworkNoise"
+            model_path = pretrained_base+'/bayer_noise/'
+
+    # if a network path is provided use it instead 
+    if net_path: model_path = net_path
+
+    model_ref = modules.get({"model": model_name})
+    cvt = converter.Converter(model_path, model_name)
     cvt.convert(model_ref)
     for p in model_ref.parameters():
         p.requires_grad = False
@@ -267,8 +273,8 @@ def demosaick_load_model(noiselevel=0.0, xtrans=False):
 
 
 def main(args):
-
-    model_ref = demosaick_load_model(args.noise, xtrans=(args.mosaic_type == 'xtrans') )
+    # Load the network for the specific application
+    model_ref = demosaick_load_model(args.net_path, args.noise, xtrans=(args.mosaic_type == 'xtrans') )
     if args.gpu:
         model_ref.cuda()
     else:
@@ -340,7 +346,8 @@ def main(args):
     # the othe field is just the mask
     M = np.array(M)[:1,:,:,:]
 
-    R, runtime = demosaick(model_ref, M, args.noise, args.tile_size, crop)
+    with th.no_grad():
+        R, runtime = demosaick(model_ref, M, args.noise, args.tile_size, crop)
 
     R = R.squeeze().transpose(1, 2, 0)
 
@@ -396,6 +403,7 @@ if __name__ == "__main__":
     parser = argparse.ArgumentParser()
 
     parser.add_argument('--input', type=str, default='input.png', help='path to input image.')
+    parser.add_argument('--net_path', type=str, default=None , help='path to model folder by default determined automatically i.e.: pretrained_models/bayer.')
     parser.add_argument('--output', type=str, default='output.png', help='path to output image.')
     parser.add_argument('--output_psnr', type=str, default='output_psnr.txt', help='path to output psnr.')
     parser.add_argument('--noise', type=float, default=0.0, help='standard deviation of additive Gaussian noise, w.r.t to a [0,1] intensity scale.')
