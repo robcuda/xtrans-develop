@@ -245,7 +245,7 @@ def demosaick_load_model(net_path=None, noiselevel=0.0, xtrans=False):
     otherwise BayerNetwork or BayerNetworkNoise are used depending
     on whether noiselevel>0
     '''
-    here = os.path.dirname(__file__)
+    here = os.path.dirname(os.path.abspath(__file__))
     pretrained_base = here+'/pretrained_models/'
 
     print("Loading Caffe weights")
