@@ -191,13 +191,27 @@ class DemosaicDataset(Dataset):
 
       im = np.clip(im, 0, 1)
 
-      im = np.ascontiguousarray(im).astype(np.float32)
+    im = np.ascontiguousarray(im).astype(np.float32)
 
     im = np.transpose(im, [2, 1, 0])
 
     # crop boundaries to ignore shift
     c = 8
     im = im[:, c:-c, c:-c]
+
+    # Sample a random patch from the image, images can be repeated in the dataset file
+    ps = 128
+    if im.shape[1] > ps:
+        px = np.random.randint(0, im.shape[1]-ps)
+    else:
+        px = 0
+
+    if im.shape[2] > ps:
+        py = np.random.randint(0, im.shape[2]-ps)
+    else:
+        py = 0
+
+    im = im[:, px:(px+ps), py:(py+ps)]
 
     # apply mosaic
     mosaic, mask = self.make_mosaic(im)
