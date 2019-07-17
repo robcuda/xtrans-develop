@@ -14,6 +14,7 @@ The training script has been adapted to be run out of the box (visualization too
 not been tested until convergence!)
 
 Example call for the training (output and checkpoints are saved in the `output` folder):
+
     python3 ./train.py data/training/dataset.txt output
 
 Note that the dataset should be given as a list of images from the same folder. A random 128x128 patch is extracted
