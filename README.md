@@ -3,7 +3,10 @@ Pytorch implementation (using pretrained weights) of:
      Deep Joint Demosaicking and Denoising, SiGGRAPH Asia 2016.
      Michaël Gharbi, Gaurav Chaurasia, Sylvain Paris, Frédo Durand
 
-based on <https://github.com/mgharbi/demosaicnet_torch> and <https://github.com/mgharbi/demosaicnet_caffe>
+This code (based on <https://github.com/mgharbi/demosaicnet_torch> and <https://github.com/mgharbi/demosaicnet_caffe>) was created to [reproduce the results of demosaicnet for this publication](https://doi.org/10.5201/ipol.2019.274)
+
+    T. Ehret, and G. Facciolo, "A Study of Two CNN Demosaicking Algorithms", 
+    Image Processing On Line, 9 (2019), pp. 220–230. https://doi.org/10.5201/ipol.2019.274
 
 Example call (result is saved as output.png):
 
