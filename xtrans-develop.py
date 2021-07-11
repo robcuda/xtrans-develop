@@ -287,7 +287,7 @@ def main(args):
         model_ref.cpu()
 
     input_is_file = args.input.lower().endswith(".raf") if args.input else False
-    output_is_file = args.output.lower().endswith((".tif",".tif")) if args.output else False
+    output_is_file = args.output.lower().endswith((".tiff",".tif")) if args.output else False
 
     if input_is_file:
         if args.output and not output_is_file:
