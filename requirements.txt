@@ -4,3 +4,6 @@ torch
 tqdm
 torchvision
 setproctitle
+rawpy
+pyexiv2
+Pillow
